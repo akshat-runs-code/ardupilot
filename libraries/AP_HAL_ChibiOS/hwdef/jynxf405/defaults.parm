@@ -1,0 +1,13 @@
+
+AHRS_ORIENTATION 11
+
+#Comment it, used for testing custom BMS.
+BATT_MONITOR    30
+
+LOG_BITMASK         131592
+LOG_FILE_RATEMAX    8
+LOG_BLK_RATEMAX     8
+EK3_LOG_LEVEL       3
+LOG_DISARMED        1
+LOG_DARM_RATEMAX    3
+

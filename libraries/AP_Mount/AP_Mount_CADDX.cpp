@@ -4,6 +4,9 @@
 
 #include "AP_Mount_CADDX.h"
 #include <AP_HAL/AP_HAL.h>
+#include "AP_AHRS/AP_AHRS.h"
+#include <GCS_MAVLink/GCS.h>
+#include <stdio.h>
 
 #define AP_MOUNT_CADDX_RESEND_MS   1000    // resend angle targets to gimbal once per second
 #define SET_ATTITUDE_HEADER1 0xA5
@@ -11,6 +14,9 @@
 #define SET_ATTITUDE_BUF_SIZE 10
 #define AXIS_MIN 0
 #define AXIS_MAX 4096
+
+float target_angle = 0.0f;
+float drone_angle = 0.0f;
 
 // update mount position - should be called periodically
 void AP_Mount_CADDX::update()
@@ -33,6 +39,7 @@ void AP_Mount_CADDX::update()
             const Vector3f &target = _params.retract_angles.get();
             mnt_target.angle_rad.set(target*DEG_TO_RAD, false);
             mnt_target.target_type = MountTargetType::ANGLE;
+            target_angle = AP::ahrs().get_pitch();
             break;
         }
 
@@ -41,6 +48,7 @@ void AP_Mount_CADDX::update()
             const Vector3f &target = _params.neutral_angles.get();
             mnt_target.angle_rad.set(target*DEG_TO_RAD, false);
             mnt_target.target_type = MountTargetType::ANGLE;
+            target_angle = AP::ahrs().get_pitch();
             break;
         }
 
@@ -58,6 +66,8 @@ void AP_Mount_CADDX::update()
             switch (mnt_target.target_type) {
             case MountTargetType::ANGLE:
                 mnt_target.angle_rad = rc_target;
+                target_angle = rc_target.pitch;
+                //gcs().send_text(MAV_SEVERITY_INFO,"RC Target = %.4f,%.4f,%.4f\n",rc_target.pitch,rc_target.roll,rc_target.yaw);
                 break;
             case MountTargetType::RATE:
                 mnt_target.rate_rads = rc_target;
@@ -71,6 +81,7 @@ void AP_Mount_CADDX::update()
         case MAV_MOUNT_MODE_GPS_POINT:
             if (get_angle_target_to_roi(mnt_target.angle_rad)) {
                 mnt_target.target_type = MountTargetType::ANGLE;
+                target_angle = -1*mnt_target.angle_rad.pitch;
                 resend_now = true;
             }
             break;
@@ -79,6 +90,7 @@ void AP_Mount_CADDX::update()
         case MAV_MOUNT_MODE_HOME_LOCATION:
             if (get_angle_target_to_home(mnt_target.angle_rad)) {
                 mnt_target.target_type = MountTargetType::ANGLE;
+                target_angle = -1 * mnt_target.angle_rad.pitch;
                 resend_now = true;
             }
             break;
@@ -87,6 +99,7 @@ void AP_Mount_CADDX::update()
         case MAV_MOUNT_MODE_SYSID_TARGET:
             if (get_angle_target_to_sysid(mnt_target.angle_rad)) {
                 mnt_target.target_type = MountTargetType::ANGLE;
+                target_angle = -1*mnt_target.angle_rad.pitch;
                 resend_now = true;
             }
             break;
@@ -123,60 +136,69 @@ void AP_Mount_CADDX::send_target_angles(const MountTarget& angle_target_rad)
     if (!_initialised) {
         return;
     }
-
-    // ensure we have enough space to send the packet
     if (_uart->txspace() < SET_ATTITUDE_BUF_SIZE) {
         return;
     }
 
-    // calculate roll, pitch, yaw angles in range 0 to 4096
-    const float scalar = AXIS_MAX / M_2PI;
-    const uint16_t roll_target_cmd = constrain_uint16(wrap_2PI(angle_target_rad.roll) * scalar, AXIS_MIN, AXIS_MAX);
-    const uint16_t pitch_target_cmd = constrain_uint16(wrap_2PI(angle_target_rad.pitch) * scalar, AXIS_MIN, AXIS_MAX);
-    const uint16_t yaw_target_cmd = constrain_uint16(wrap_2PI(angle_target_rad.get_bf_yaw()) * scalar, AXIS_MIN, AXIS_MAX);
+    char data[128];
+    drone_angle = AP::ahrs().get_pitch();
+   // gcs().send_text(MAV_SEVERITY_INFO,"%.3f,%.3f\n",target_angle,drone_angle);
+    snprintf(data, sizeof(data),"%.3f,%.3f\n",target_angle,drone_angle);
+    _uart->write(data);
+    //gcs().send_text(MAV_SEVERITY_INFO,"%.3f,%.3f\n",target_angle,drone_angle);
+    // // ensure we have enough space to send the packet
+    // if (_uart->txspace() < SET_ATTITUDE_BUF_SIZE) {
+    //     return;
+    // }
 
-    // prepare packet to send to gimbal
-    uint8_t set_attitude_cmd_buf[SET_ATTITUDE_BUF_SIZE] {};
+    // // calculate roll, pitch, yaw angles in range 0 to 4096
+    // const float scalar = AXIS_MAX / M_2PI;
+    // const uint16_t roll_target_cmd = constrain_uint16(wrap_2PI(angle_target_rad.roll) * scalar, AXIS_MIN, AXIS_MAX);
+    // const uint16_t pitch_target_cmd = constrain_uint16(wrap_2PI(angle_target_rad.pitch) * scalar, AXIS_MIN, AXIS_MAX);
+    // const uint16_t yaw_target_cmd = constrain_uint16(wrap_2PI(angle_target_rad.get_bf_yaw()) * scalar, AXIS_MIN, AXIS_MAX);
 
-    // first two bytes hold the header
-    set_attitude_cmd_buf[0] = SET_ATTITUDE_HEADER1;
-    set_attitude_cmd_buf[1] = SET_ATTITUDE_HEADER2;
+    // // prepare packet to send to gimbal
+    // uint8_t set_attitude_cmd_buf[SET_ATTITUDE_BUF_SIZE] {};
 
-    // byte 2's lower 3 bits are mode
-    // lower 5 bits are sensitivity but always left as zero
-    uint8_t mode = (uint8_t)LockMode::TILT_LOCK | (uint8_t)LockMode::ROLL_LOCK;
-    if (angle_target_rad.yaw_is_ef) {
-        mode |= (uint8_t)LockMode::YAW_LOCK;
-    }
-    set_attitude_cmd_buf[2] = mode & 0x07;
+    // // first two bytes hold the header
+    // set_attitude_cmd_buf[0] = SET_ATTITUDE_HEADER1;
+    // set_attitude_cmd_buf[1] = SET_ATTITUDE_HEADER2;
 
-    // byte 3's lower 4 bits are reserved
-    // upper 4 bits are roll's lower 4 bits
-    set_attitude_cmd_buf[3] = (roll_target_cmd << 4) & 0xF0;
+    // // byte 2's lower 3 bits are mode
+    // // lower 5 bits are sensitivity but always left as zero
+    // uint8_t mode = (uint8_t)LockMode::TILT_LOCK | (uint8_t)LockMode::ROLL_LOCK;
+    // if (angle_target_rad.yaw_is_ef) {
+    //     mode |= (uint8_t)LockMode::YAW_LOCK;
+    // }
+    // set_attitude_cmd_buf[2] = mode & 0x07;
 
-    // byte 4 is roll's upper 8 bits
-    set_attitude_cmd_buf[4] = (roll_target_cmd >> 4) & 0xFF;
+    // // byte 3's lower 4 bits are reserved
+    // // upper 4 bits are roll's lower 4 bits
+    // set_attitude_cmd_buf[3] = (roll_target_cmd << 4) & 0xF0;
 
-    // byte 5 is pitch's lower 8 bits
-    set_attitude_cmd_buf[5] = pitch_target_cmd & 0xFF;
+    // // byte 4 is roll's upper 8 bits
+    // set_attitude_cmd_buf[4] = (roll_target_cmd >> 4) & 0xFF;
 
-    // byte 6's lower 4 bits are pitch's upper 4 bits
-    // upper 4 bits are yaw's lower 4 bits
-    set_attitude_cmd_buf[6] = (pitch_target_cmd >> 8) & 0x0F;
-    set_attitude_cmd_buf[6] |= (yaw_target_cmd << 4) & 0xF0;
+    // // byte 5 is pitch's lower 8 bits
+    // set_attitude_cmd_buf[5] = pitch_target_cmd & 0xFF;
 
-    // byte 7 is yaw's upper 8 bits
-    set_attitude_cmd_buf[7] = (yaw_target_cmd >> 4) & 0xFF;
+    // // byte 6's lower 4 bits are pitch's upper 4 bits
+    // // upper 4 bits are yaw's lower 4 bits
+    // set_attitude_cmd_buf[6] = (pitch_target_cmd >> 8) & 0x0F;
+    // set_attitude_cmd_buf[6] |= (yaw_target_cmd << 4) & 0xF0;
 
-    // calculate CRC
-    const uint16_t crc16 = crc16_ccitt(set_attitude_cmd_buf, sizeof(set_attitude_cmd_buf) - 2, 0);
-    set_attitude_cmd_buf[8] = HIGHBYTE(crc16);
-    set_attitude_cmd_buf[9] = LOWBYTE(crc16);
+    // // byte 7 is yaw's upper 8 bits
+    // set_attitude_cmd_buf[7] = (yaw_target_cmd >> 4) & 0xFF;
 
-    // send packet to gimbal
-    _uart->write(set_attitude_cmd_buf, sizeof(set_attitude_cmd_buf));
+    // // calculate CRC
+    // const uint16_t crc16 = crc16_ccitt(set_attitude_cmd_buf, sizeof(set_attitude_cmd_buf) - 2, 0);
+    // set_attitude_cmd_buf[8] = HIGHBYTE(crc16);
+    // set_attitude_cmd_buf[9] = LOWBYTE(crc16);
 
-    // store time of send
+    // // send packet to gimbal
+    // _uart->write(set_attitude_cmd_buf, sizeof(set_attitude_cmd_buf));
+
+    // // store time of send
     _last_send_ms = AP_HAL::millis();
 }
 
