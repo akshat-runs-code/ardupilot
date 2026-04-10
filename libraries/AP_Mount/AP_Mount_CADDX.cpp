@@ -109,7 +109,6 @@ void AP_Mount_CADDX::update()
     if (mnt_target.target_type == MountTargetType::RATE) {
         update_angle_target_from_rate(mnt_target.rate_rads, mnt_target.angle_rad);
     }
-
     // resend target angles at least once per second
     // resend_now = resend_now || ((AP_HAL::millis() - _last_send_ms) > AP_MOUNT_CADDX_RESEND_MS);
     // if (resend_now) {
@@ -129,7 +128,6 @@ bool AP_Mount_CADDX::get_attitude_quaternion(Quaternion& att_quat)
 void AP_Mount_CADDX::update_fast(){
     //uint32_t now = AP_HAL::micros();
     //uint32_t delay = now - _last_send_ms;
-     //gcs().send_text(MAV_SEVERITY_INFO,"%lu\r\n",delay);
     //_last_send_ms = AP_HAL::micros();
     send_target_angles(mnt_target.angle_rad);
 }
